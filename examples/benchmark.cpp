@@ -126,6 +126,20 @@ void test_assembly_levels(Mesh &&mesh, int order, bool dg, const int pb)
 
 int main(int argc, char *argv[])
 {
+   const char *device_config = "cpu";
+   OptionsParser args(argc, argv);
+   args.AddOption(&device_config, "-d", "--device",
+                  "Device configuration string, see Device::Configure().");
+   args.Parse();
+   if (!args.Good())
+   {
+      args.PrintUsage(cout);
+      return 1;
+   }
+   args.PrintOptions(cout);
+   Device device(device_config);
+   device.Print();
+
    for (int pb : {0, 1, 2})
    {
       switch (pb)
