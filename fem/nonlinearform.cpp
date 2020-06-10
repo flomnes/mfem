@@ -10,6 +10,7 @@
 // CONTRIBUTING.md for details.
 
 #include "fem.hpp"
+#include "../general/forall.hpp"
 
 namespace mfem
 {
@@ -27,7 +28,7 @@ void NonlinearForm::SetAssemblyLevel(AssemblyLevel assembly_level)
          // This is the default behavior.
          break;
       case AssemblyLevel::PARTIAL:
-         ext = new PANonlinearFormExtension(this);
+         ext = new PANonlinearForm(this);
          break;
       default:
          mfem_error("Unknown assembly level for this form.");
@@ -80,6 +81,13 @@ void NonlinearForm::SetEssentialVDofs(const Array<int> &ess_vdofs_list)
 
 double NonlinearForm::GetGridFunctionEnergy(const Vector &x) const
 {
+   if (ext)
+   {
+      MFEM_VERIFY(fnfi.Size() == 0, "Not Yet implemented!");
+      MFEM_VERIFY(bfnfi.Size() == 0, "Not Yet implemented!");
+      return ext->GetGridFunctionEnergy(x);
+   }
+
    Array<int> vdofs;
    Vector el_x;
    const FiniteElement *fe;
@@ -137,7 +145,16 @@ void NonlinearForm::Mult(const Vector &x, Vector &y) const
 
    if (ext)
    {
+      py = 0.0;
       ext->Mult(px, py);
+      if (Serial())
+      {
+         if (cP) { cP->MultTranspose(py, y); }
+         const int N = ess_tdof_list.Size();
+         const auto tdof = ess_tdof_list.Read();
+         auto Y = y.ReadWrite();
+         MFEM_FORALL(i, N, Y[tdof[i]] = 0.0; );
+      }
       return;
    }
 
@@ -264,7 +281,16 @@ Operator &NonlinearForm::GetGradient(const Vector &x) const
 {
    if (ext)
    {
-      MFEM_ABORT("Not yet implemented!");
+      Operator &grad = ext->GetGradient(Prolongate(x));
+      extGrad.Reset(&grad, false);
+      if (Serial())
+      {
+         if (cP) { extGrad.Reset(new RAPOperator(*cP, grad, *cP)); }
+         Operator *G;
+         extGrad.Ptr()->Operator::FormSystemOperator(ess_tdof_list, G);
+         extGrad.Reset(G);
+      }
+      return *extGrad.Ptr();
    }
 
    const int skip_zeros = 0;
@@ -284,7 +310,6 @@ Operator &NonlinearForm::GetGradient(const Vector &x) const
    {
       *Grad = 0.0;
    }
-
    if (dnfi.Size())
    {
       for (int i = 0; i < fes->GetNE(); i++)
@@ -426,7 +451,7 @@ void NonlinearForm::Update()
 
 void NonlinearForm::Setup()
 {
-   if (ext) { return ext->AssemblePA(); }
+   if (ext) { return ext->Assemble(); }
 }
 
 NonlinearForm::~NonlinearForm()

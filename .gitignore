@@ -29,6 +29,8 @@ config/sample-runs-build.log
 doc/CodeDocumentation.conf
 doc/CodeDocumentation.html
 doc/CodeDocumentation
+doc/undoc.log
+doc/warnings.log
 
 # Temporary files created by the tests.
 *.stderr
@@ -245,6 +247,10 @@ tests/unit/unit_tests
 tests/unit/punit_tests
 tests/unit/sedov_tests_*
 tests/unit/psedov_tests_*
+tests/unit/tmop_tests_*
+tests/unit/ptmop_tests_*
+tests/unit/blade.mesh
+tests/unit/toroid-hex.mesh
 
 # Test script output
 tests/scripts/*.err

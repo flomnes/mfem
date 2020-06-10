@@ -40,6 +40,59 @@ namespace mfem
 namespace kernels
 {
 
+template<int H, int W, typename T>
+MFEM_HOST_DEVICE inline
+void FNorm(double &scale_factor, double &scaled_fnorm2, const T *data)
+{
+   int i, hw = H * W;
+   T max_norm = 0.0, entry, fnorm2;
+
+   for (i = 0; i < hw; i++)
+   {
+      entry = fabs(data[i]);
+      if (entry > max_norm)
+      {
+         max_norm = entry;
+      }
+   }
+
+   if (max_norm == 0.0)
+   {
+      scale_factor = scaled_fnorm2 = 0.0;
+      return;
+   }
+
+   fnorm2 = 0.0;
+   for (i = 0; i < hw; i++)
+   {
+      entry = data[i] / max_norm;
+      fnorm2 += entry * entry;
+   }
+
+   scale_factor = max_norm;
+   scaled_fnorm2 = fnorm2;
+}
+
+/// Compute the Frobenius norm of the matrix
+template<int H, int W, typename T>
+MFEM_HOST_DEVICE inline
+double FNorm(const T *data)
+{
+   double s, n2;
+   kernels::FNorm<H,W>(s, n2, data);
+   return s*sqrt(n2);
+}
+
+/// Compute the square of the Frobenius norm of the matrix
+template<int H, int W, typename T>
+MFEM_HOST_DEVICE inline
+double FNorm2(const T *data)
+{
+   double s, n2;
+   kernels::FNorm<H,W>(s, n2, data);
+   return s*s*n2;
+}
+
 /// Returns the l2 norm of the Vector with given @a size and @a data.
 template<typename T>
 MFEM_HOST_DEVICE inline
@@ -120,18 +173,27 @@ void Symmetrize(const int size, T *data)
 template<int dim, typename T>
 MFEM_HOST_DEVICE inline T Det(const T *data)
 {
-   return TDet<T>(ColumnMajorLayout2D<dim,dim>(), data);
+   return TDetHD<T>(ColumnMajorLayout2D<dim,dim>(), data);
 }
 
-/** @brief Return the inverse a matrix with given @a size and @a data into the
-    matrix with data @a inv_data. */
+/** @brief Return the inverse of a matrix with given @a size and @a data into
+   the matrix with data @a inv_data. */
 template<int dim, typename T>
 MFEM_HOST_DEVICE inline
 void CalcInverse(const T *data, T *inv_data)
 {
    typedef ColumnMajorLayout2D<dim,dim> layout_t;
-   const T det = TAdjDet<T>(layout_t(), data, layout_t(), inv_data);
-   TAssign<AssignOp::Mult>(layout_t(), inv_data, static_cast<T>(1.0)/det);
+   const T det = TAdjDetHD<T>(layout_t(), data, layout_t(), inv_data);
+   TAssignHD<AssignOp::Mult>(layout_t(), inv_data, static_cast<T>(1.0)/det);
+}
+
+/** @brief Return the adjugate of a matrix */
+template<int dim, typename T>
+MFEM_HOST_DEVICE inline
+void CalcAdjugate(const T *data, T *adj_data)
+{
+   typedef ColumnMajorLayout2D<dim,dim> layout_t;
+   TAdjugateHD<T>(layout_t(), data, layout_t(), adj_data);
 }
 
 /** @brief Compute C = A + alpha*B, where the matrices A, B and C are of size @a
@@ -150,6 +212,50 @@ void Add(const int height, const int width, const TALPHA alpha,
       }
    }
 }
+
+/** @brief Compute C = alpha*A + beta*B, where the matrices A, B and C are of
+    size @a height x @a width with data @a Adata, @a Bdata and @a Cdata. */
+template<typename TALPHA, typename TBETA, typename TA, typename TB, typename TC>
+MFEM_HOST_DEVICE inline
+void Add(const int height, const int width,
+         const TALPHA alpha, const TA *Adata,
+         const TBETA beta, const TB *Bdata,
+         TC *Cdata)
+{
+   const int m = height * width;
+   for (int i = 0; i < m; i++)
+   {
+      Cdata[i] = alpha * Adata[i] + beta * Bdata[i];
+   }
+}
+
+/** @brief Compute B += A, where the matrices A and B are of size
+    @a height x @a width with data @a Adata and @a Bdata. */
+template<typename TA, typename TB>
+MFEM_HOST_DEVICE inline
+void Add(const int height, const int width, const TA *Adata, TB *Bdata)
+{
+   const int m = height * width;
+   for (int i = 0; i < m; i++)
+   {
+      Bdata[i] += Adata[i];
+   }
+}
+
+/** @brief Compute B += alpha*A, where the matrices A and B are of size
+    @a height x @a width with data @a Adata and @a Bdata. */
+template<typename TA, typename TB>
+MFEM_HOST_DEVICE inline
+void Set(const int height, const int width,
+         const double alpha, const TA *Adata, TB *Bdata)
+{
+   const int m = height * width;
+   for (int i = 0; i < m; i++)
+   {
+      Bdata[i] = alpha * Adata[i];
+   }
+}
+
 
 /** @brief Matrix-matrix multiplication: A = B * C, where the matrices A, B and
     C are of sizes @a Aheight x @a Awidth, @a Aheight x @a Bwidth and @a Bwidth

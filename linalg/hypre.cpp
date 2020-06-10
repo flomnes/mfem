@@ -1252,6 +1252,7 @@ void HypreParMatrix::operator*=(double s)
 static void get_sorted_rows_cols(const Array<int> &rows_cols,
                                  Array<HYPRE_Int> &hypre_sorted)
 {
+   rows_cols.HostRead();
    hypre_sorted.SetSize(rows_cols.Size());
    bool sorted = true;
    for (int i = 0; i < rows_cols.Size(); i++)
@@ -2130,6 +2131,7 @@ HypreSmoother::HypreSmoother() : Solver()
 
    l1_norms = NULL;
    pos_l1_norms = false;
+   eig_est_cg_iter = 10;
    B = X = V = Z = NULL;
    X0 = X1 = NULL;
    fir_coeffs = NULL;
@@ -2137,7 +2139,7 @@ HypreSmoother::HypreSmoother() : Solver()
 
 HypreSmoother::HypreSmoother(HypreParMatrix &_A, int _type,
                              int _relax_times, double _relax_weight, double _omega,
-                             int _poly_order, double _poly_fraction)
+                             int _poly_order, double _poly_fraction, int _eig_est_cg_iter)
 {
    type = _type;
    relax_times = _relax_times;
@@ -2145,6 +2147,7 @@ HypreSmoother::HypreSmoother(HypreParMatrix &_A, int _type,
    omega = _omega;
    poly_order = _poly_order;
    poly_fraction = _poly_fraction;
+   eig_est_cg_iter = _eig_est_cg_iter;
 
    l1_norms = NULL;
    pos_l1_norms = false;
@@ -2167,10 +2170,12 @@ void HypreSmoother::SetSOROptions(double _relax_weight, double _omega)
    omega = _omega;
 }
 
-void HypreSmoother::SetPolyOptions(int _poly_order, double _poly_fraction)
+void HypreSmoother::SetPolyOptions(int _poly_order, double _poly_fraction,
+                                   int _eig_est_cg_iter)
 {
    poly_order = _poly_order;
    poly_fraction = _poly_fraction;
+   eig_est_cg_iter = _eig_est_cg_iter;
 }
 
 void HypreSmoother::SetTaubinOptions(double _lambda, double _mu,
@@ -2254,15 +2259,31 @@ void HypreSmoother::SetOperator(const Operator &op)
    if (type == 16)
    {
       poly_scale = 1;
-      hypre_ParCSRMaxEigEstimateCG(*A, poly_scale, 10,
-                                   &max_eig_est, &min_eig_est);
+      if (eig_est_cg_iter > 0)
+      {
+         hypre_ParCSRMaxEigEstimateCG(*A, poly_scale, eig_est_cg_iter,
+                                      &max_eig_est, &min_eig_est);
+      }
+      else
+      {
+         min_eig_est = 0;
+         hypre_ParCSRMaxEigEstimate(*A, poly_scale, &max_eig_est);
+      }
       Z = new HypreParVector(*A);
    }
    else if (type == 1001 || type == 1002)
    {
       poly_scale = 0;
-      hypre_ParCSRMaxEigEstimateCG(*A, poly_scale, 10,
-                                   &max_eig_est, &min_eig_est);
+      if (eig_est_cg_iter > 0)
+      {
+         hypre_ParCSRMaxEigEstimateCG(*A, poly_scale, eig_est_cg_iter,
+                                      &max_eig_est, &min_eig_est);
+      }
+      else
+      {
+         min_eig_est = 0;
+         hypre_ParCSRMaxEigEstimate(*A, poly_scale, &max_eig_est);
+      }
 
       // The Taubin and FIR polynomials are defined on [0, 2]
       max_eig_est /= 2;

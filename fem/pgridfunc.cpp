@@ -232,7 +232,8 @@ void ParGridFunction::ExchangeFaceNbrData()
    auto d_send_data = send_data.Write();
    MFEM_FORALL(i, send_data.Size(),
    {
-      d_send_data[i] = d_data[d_send_ldof[i]];
+      const int ldof = d_send_ldof[i];
+      d_send_data[i] = d_data[ldof >= 0 ? ldof : -1-ldof];
    });
 
    bool mpi_gpu_aware = Device::GetGPUAwareMPI();
@@ -538,6 +539,7 @@ void ParGridFunction::SaveAsOne(std::ostream &out)
    int *nfdofs = new int[NRanks];
    int *nrdofs = new int[NRanks];
 
+   HostReadWrite();
    values[0] = data;
    nv[0]     = pfes -> GetVSize();
    nvdofs[0] = pfes -> GetNVDofs();

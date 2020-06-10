@@ -20,10 +20,9 @@
 namespace mfem
 {
 
-/** The abstract base class NonlinearFormIntegrator is used to express the
-    local action of a general nonlinear finite element operator. In addition
-    it may provide the capability to assemble the local gradient operator
-    and to compute the local energy. */
+/** @brief This class is used to express the local action of a general nonlinear
+    finite element operator. In addition it may provide the capability to
+    assemble the local gradient operator and to compute the local energy. */
 class NonlinearFormIntegrator
 {
 protected:
@@ -69,6 +68,10 @@ public:
                                    ElementTransformation &Tr,
                                    const Vector &elfun);
 
+   /// Compute the local energy with partial assembly.
+   virtual double GetGridFunctionEnergyPA(const FiniteElementSpace &fes,
+                                          const Vector &x) const;
+
    /// Method defining partial assembly.
    /** The result of the partial assembly is stored internally so that it can be
        used later in the methods AddMultPA(). */
@@ -88,6 +91,10 @@ public:
        This method can be called only after the method AssemblePA() has been
        called. */
    virtual void AddMultPA(const Vector &x, Vector &y) const;
+
+   /// Method for partially assembled gradient action.
+   virtual void AddMultGradPA(const Vector &g,
+                              const Vector &x, Vector &y) const;
 
    virtual ~NonlinearFormIntegrator() { }
 };
