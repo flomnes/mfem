@@ -3265,6 +3265,15 @@ void DenseMatrixInverse::SetOperator(const Operator &op)
    Factor(*p);
 }
 
+void DenseMatrixInverse::Mult(const double *x, double *y) const
+{
+   for (int row = 0; row < height; row++)
+   {
+      y[row] = x[row];
+   }
+   lu.Solve(width, 1, y);
+}
+
 void DenseMatrixInverse::Mult(const Vector &x, Vector &y) const
 {
    y = x;
@@ -3493,113 +3502,88 @@ DenseTensor &DenseTensor::operator=(double c)
    return *this;
 }
 
-void BatchLUFactor(Vector &Minv,const int m,const int NE, Array<int> &P)
+void BatchLUFactor(DenseTensor &Mlu, Array<int> &P, const double TOL)
 {
+   const int m = Mlu.SizeI();
+   const int NE = Mlu.SizeK();
    P.SetSize(m*NE);
-   auto data_all = mfem::Reshape(Minv.ReadWrite(), m, m, NE);
-   auto piv_all = mfem::Reshape(P.Write(), m, NE);
+
+   auto data_all = mfem::Reshape(Mlu.ReadWrite(), m, m, NE);
+   auto ipiv_all = mfem::Reshape(P.Write(), m, NE);
+   Array<bool> pivot_flag(1);
+   pivot_flag[0] = true;
+   bool *d_pivot_flag = pivot_flag.ReadWrite();
 
    MFEM_FORALL(e, NE,
    {
-
-      double *data = &data_all(0,0,e);
-      int *ipiv = &piv_all(0,e);
       for (int i = 0; i < m; i++)
       {
-
          // pivoting
          {
             int piv = i;
-            double a = fabs(data[piv+i*m]);
+            double a = fabs(data_all(piv,i,e));
             for (int j = i+1; j < m; j++)
             {
-               const double b = fabs(data[j+i*m]);
+               const double b = fabs(data_all(j,i,e));
                if (b > a)
                {
                   a = b;
                   piv = j;
                }
             }
-            ipiv[i] = piv;
+            ipiv_all(i,e) = piv;
             if (piv != i)
             {
                // swap rows i and piv in both L and U parts
                for (int j = 0; j < m; j++)
                {
-                  mfem::kernels::internal::Swap<double>(data[i+j*m], data[piv+j*m]);
+                  mfem::kernels::internal::Swap<double>(data_all(i,j,e), data_all(piv,j,e));
                }
             }
-         }//pivot end
+         } // pivot end
 
-         //Q: How to check for errors?
-         //if (abs(data[i + i*m]) <= TOL)
-         //{
-         //return false; // failed
-         //}
+         if (abs(data_all(i,i,e)) <= TOL)
+         {
+            d_pivot_flag[0] = false;
+         }
 
-         const double a_ii_inv = 1.0 / data[i+i*m];
+         const double a_ii_inv = 1.0 / data_all(i,i,e);
          for (int j = i+1; j < m; j++)
          {
-            data[j+i*m] *= a_ii_inv;
+            data_all(j,i,e) *= a_ii_inv;
          }
 
          for (int k = i+1; k < m; k++)
          {
-            const double a_ik = data[i+k*m];
+            const double a_ik = data_all(i,k,e);
             for (int j = i+1; j < m; j++)
             {
-               data[j+k*m] -= a_ik * data[j+i*m];
+               data_all(j,k,e) -= a_ik * data_all(j,i,e);
             }
          }
 
-      }//m loop
+      } // m loop
 
    });
 
+   MFEM_ASSERT(pivot_flag.HostRead()[0], "Batch LU factorization failed \n");
 }
 
-void BatchLUSolve(Vector &Minv, int m, int NE,
-                  Array<int> &P, Vector &X)
+void BatchLUSolve(const DenseTensor &Mlu, const Array<int> &P, Vector &X)
 {
 
-   auto data_all = mfem::Reshape(Minv.Read(), m, m, NE);
+   const int m = Mlu.SizeI();
+   const int NE = Mlu.SizeK();
+
+   auto data_all = mfem::Reshape(Mlu.Read(), m, m, NE);
    auto piv_all = mfem::Reshape(P.Read(), m, NE);
    auto x_all = mfem::Reshape(X.ReadWrite(), m, NE);
 
    MFEM_FORALL(e, NE,
    {
-
-      const double *data = &data_all(0,0,e);
-      const int *ipiv = &piv_all(0,e);
-      double *x = &x_all(0,e);
-
-      // X <- P X
-      for (int i = 0; i < m; i++)
-      {
-         mfem::kernels::internal::Swap<double>(x[i], x[ipiv[i]]);
-      }
-
-      // X <- L^{-1} X
-      for (int j = 0; j < m; j++)
-      {
-         const double x_j = x[j];
-         for (int i = j+1; i < m; i++)
-         {
-            x[i] -= data[i+j*m] * x_j;
-         }
-      }
-
-      // X <- U^{-1} X
-      for (int j = m-1; j >= 0; j--)
-      {
-         const double x_j = ( x[j] /= data[j+j*m] );
-         for (int i = 0; i < j; i++)
-         {
-            x[i] -= data[i+j*m] * x_j;
-         }
-      }
+      kernels::LUSolve(&data_all(0, 0,e), m, &piv_all(0, e), &x_all(0,e));
    });
 
 }
 
-} //namespace
+} // namespace mfem

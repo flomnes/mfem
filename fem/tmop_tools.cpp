@@ -33,10 +33,11 @@ void AdvectorCG::ComputeAtNewPosition(const Vector &new_nodes,
    const int pnt_cnt = new_field.Size()/ncomp;
 
    new_field = field0;
-
+   new_field.HostReadWrite();
+   Vector new_field_temp;
    for (int i = 0; i < ncomp; i++)
    {
-      Vector new_field_temp(new_field.GetData()+i*pnt_cnt, pnt_cnt);
+      new_field_temp.MakeRef(new_field, i*pnt_cnt, pnt_cnt);
       ComputeAtNewPositionScalar(new_nodes, new_field_temp);
    }
 
@@ -71,13 +72,13 @@ void AdvectorCG::ComputeAtNewPositionScalar(const Vector &new_nodes,
    if (fes)
    {
       fess = new FiniteElementSpace(fes->GetMesh(), fes->FEColl(), 1);
-      oper = new SerialAdvectorCGOper(nodes0, u, *fess);
+      oper = new SerialAdvectorCGOper(nodes0, u, *fess, al);
    }
 #ifdef MFEM_USE_MPI
    else if (pfes)
    {
       pfess = new ParFiniteElementSpace(pfes->GetParMesh(), pfes->FEColl(), 1);
-      oper  = new ParAdvectorCGOper(nodes0, u, *pfess);
+      oper  = new ParAdvectorCGOper(nodes0, u, *pfess, al);
    }
 #endif
    MFEM_VERIFY(oper != NULL,
@@ -91,8 +92,8 @@ void AdvectorCG::ComputeAtNewPositionScalar(const Vector &new_nodes,
       h_min = std::min(h_min, m->GetElementSize(i));
    }
    double v_max = 0.0;
-   
-   const int s = new_field.Size() / 2;
+   const int s = new_field.Size();
+
    u.HostReadWrite();
    for (int i = 0; i < s; i++)
    {
@@ -153,6 +154,7 @@ void AdvectorCG::ComputeAtNewPositionScalar(const Vector &new_nodes,
 #endif
 
    // Trim the overshoots and undershoots.
+   new_field.HostReadWrite();
    for (int i = 0; i < s; i++)
    {
       if (new_field(i) < glob_minv) { new_field(i) = glob_minv; }
@@ -168,18 +170,21 @@ void AdvectorCG::ComputeAtNewPositionScalar(const Vector &new_nodes,
 
 SerialAdvectorCGOper::SerialAdvectorCGOper(const Vector &x_start,
                                            GridFunction &vel,
-                                           FiniteElementSpace &fes)
+                                           FiniteElementSpace &fes,
+                                           AssemblyLevel al)
    : TimeDependentOperator(fes.GetVSize()),
      x0(x_start), x_now(*fes.GetMesh()->GetNodes()),
-     u(vel), u_coeff(&u), M(&fes), K(&fes)
+     u(vel), u_coeff(&u), M(&fes), K(&fes), al(al)
 {
    ConvectionIntegrator *Kinteg = new ConvectionIntegrator(u_coeff);
    K.AddDomainIntegrator(Kinteg);
+   K.SetAssemblyLevel(al);
    K.Assemble(0);
    K.Finalize(0);
 
    MassIntegrator *Minteg = new MassIntegrator;
    M.AddDomainIntegrator(Minteg);
+   M.SetAssemblyLevel(al);
    M.Assemble();
    M.Finalize();
 }
@@ -189,6 +194,11 @@ void SerialAdvectorCGOper::Mult(const Vector &ind, Vector &di_dt) const
    // Move the mesh.
    const double t = GetTime();
    add(x0, t, u, x_now);
+
+   if (al == AssemblyLevel::PARTIAL)
+   {
+      K.FESpace()->GetMesh()->DeleteGeometricFactors();
+   }
 
    // Assemble on the new mesh.
    K.BilinearForm::operator=(0.0);
@@ -200,30 +210,45 @@ void SerialAdvectorCGOper::Mult(const Vector &ind, Vector &di_dt) const
 
    di_dt = 0.0;
    CGSolver lin_solver;
-   DSmoother prec;
-   lin_solver.SetPreconditioner(prec);
-   lin_solver.SetOperator(M.SpMat());
+   Solver *prec = nullptr;
+   Array<int> ess_tdof_list;
+   if (al == AssemblyLevel::PARTIAL)
+   {
+      prec = new OperatorJacobiSmoother(M, ess_tdof_list);
+      lin_solver.SetOperator(M);
+   }
+   else
+   {
+      prec = new DSmoother(M.SpMat());
+      lin_solver.SetOperator(M.SpMat());
+   }
+   lin_solver.SetPreconditioner(*prec);
    lin_solver.SetRelTol(1e-12); lin_solver.SetAbsTol(0.0);
    lin_solver.SetMaxIter(100);
    lin_solver.SetPrintLevel(0);
    lin_solver.Mult(rhs, di_dt);
+
+   delete prec;
 }
 
 #ifdef MFEM_USE_MPI
 ParAdvectorCGOper::ParAdvectorCGOper(const Vector &x_start,
                                      GridFunction &vel,
-                                     ParFiniteElementSpace &pfes)
+                                     ParFiniteElementSpace &pfes,
+                                     AssemblyLevel al)
    : TimeDependentOperator(pfes.GetVSize()),
      x0(x_start), x_now(*pfes.GetMesh()->GetNodes()),
-     u(vel), u_coeff(&u), M(&pfes), K(&pfes)
+     u(vel), u_coeff(&u), M(&pfes), K(&pfes), al(al)
 {
    ConvectionIntegrator *Kinteg = new ConvectionIntegrator(u_coeff);
    K.AddDomainIntegrator(Kinteg);
+   K.SetAssemblyLevel(al);
    K.Assemble(0);
    K.Finalize(0);
 
    MassIntegrator *Minteg = new MassIntegrator;
    M.AddDomainIntegrator(Minteg);
+   M.SetAssemblyLevel(al);
    M.Assemble();
    M.Finalize();
 }
@@ -233,6 +258,11 @@ void ParAdvectorCGOper::Mult(const Vector &ind, Vector &di_dt) const
    // Move the mesh.
    const double t = GetTime();
    add(x0, t, u, x_now);
+
+   if (al == AssemblyLevel::PARTIAL)
+   {
+      K.ParFESpace()->GetParMesh()->DeleteGeometricFactors();
+   }
 
    // Assemble on the new mesh.
    K.BilinearForm::operator=(0.0);
@@ -245,13 +275,25 @@ void ParAdvectorCGOper::Mult(const Vector &ind, Vector &di_dt) const
    HypreParVector *RHS = rhs.ParallelAssemble();
    HypreParVector X(K.ParFESpace());
    X = 0.0;
-   HypreParMatrix *Mh  = M.ParallelAssemble();
+
+   OperatorHandle Mop;
+   Solver *prec = nullptr;
+   Array<int> ess_tdof_list;
+   if (al == AssemblyLevel::PARTIAL)
+   {
+      M.FormSystemMatrix(ess_tdof_list, Mop);
+      prec = new OperatorJacobiSmoother(M, ess_tdof_list);
+   }
+   else
+   {
+      Mop.Reset(M.ParallelAssemble());
+      prec = new HypreSmoother;
+      static_cast<HypreSmoother*>(prec)->SetType(HypreSmoother::Jacobi, 1);
+   }
 
    CGSolver lin_solver(M.ParFESpace()->GetParMesh()->GetComm());
-   HypreSmoother prec;
-   prec.SetType(HypreSmoother::Jacobi, 1);
-   lin_solver.SetPreconditioner(prec);
-   lin_solver.SetOperator(*Mh);
+   lin_solver.SetPreconditioner(*prec);
+   lin_solver.SetOperator(*Mop);
    lin_solver.SetRelTol(1e-8);
    lin_solver.SetAbsTol(0.0);
    lin_solver.SetMaxIter(100);
@@ -259,8 +301,8 @@ void ParAdvectorCGOper::Mult(const Vector &ind, Vector &di_dt) const
    lin_solver.Mult(*RHS, X);
    K.ParFESpace()->GetProlongationMatrix()->Mult(X, di_dt);
 
-   delete Mh;
    delete RHS;
+   delete prec;
 }
 #endif
 
@@ -357,20 +399,67 @@ double TMOPNewtonSolver::ComputeScalingFactor(const Vector &x,
       energy_in = nlf->GetEnergy(x);
    }
 
-   const bool have_b = (b.Size() == Height());
-
    const int NE = fes->GetMesh()->GetNE(), dim = fes->GetFE(0)->GetDim(),
              dof = fes->GetFE(0)->GetDof(), nsp = ir.GetNPoints();
    Array<int> xdofs(dof * dim);
    DenseMatrix Jpr(dim), dshape(dof, dim), pos(dof, dim);
    Vector posV(pos.Data(), dof * dim);
+   Vector x_out_loc(fes->GetVSize());
 
-   Vector x_out(x.Size()), x_out_loc(fes->GetVSize());
+   if (serial)
+   {
+      const SparseMatrix *cP = fes->GetConformingProlongation();
+      if (!cP) { x_out_loc = x; }
+      else     { cP->Mult(x, x_out_loc); }
+   }
+#ifdef MFEM_USE_MPI
+   else
+   {
+      fes->GetProlongationMatrix()->Mult(x, x_out_loc);
+   }
+#endif
+
+   double min_detJ = infinity();
+   if (dim == 1)
+   {
+      for (int i = 0; i < NE; i++)
+      {
+         fes->GetElementVDofs(i, xdofs);
+         x_out_loc.GetSubVector(xdofs, posV);
+
+         for (int j = 0; j < nsp; j++)
+         {
+            fes->GetFE(i)->CalcDShape(ir.IntPoint(j), dshape);
+            MultAtB(pos, dshape, Jpr);
+            min_detJ = std::min(min_detJ, Jpr.Det());
+         }
+      }
+   }
+   else
+   {
+      min_detJ = dim == 2 ? MinDetJpr_2D(fes, x_out_loc) :
+                 dim == 3 ? MinDetJpr_3D(fes, x_out_loc) : 0.0;
+   }
+   double min_detJ_all = min_detJ;
+#ifdef MFEM_USE_MPI
+   if (parallel)
+   {
+      MPI_Allreduce(&min_detJ, &min_detJ_all, 1, MPI_DOUBLE, MPI_MIN,
+                    p_nlf->ParFESpace()->GetComm());
+   }
+#endif
+   bool untangling = false;
+   if (min_detJ_all <= 0) { untangling = true; }
+
+   const bool have_b = (b.Size() == Height());
+
+   Vector x_out(x.Size());
    bool x_out_ok = false;
    double scale = 1.0, energy_out = 0.0;
    double norm0 = Norm(r);
 
-   // Decreases the scaling of the update until the new mesh is valid.
+   const double detJ_factor = (solver_type == 1) ? 0.25 : 0.5;
+
    for (int i = 0; i < 12; i++)
    {
       add(x, -scale, c, x_out);
@@ -388,35 +477,45 @@ double TMOPNewtonSolver::ComputeScalingFactor(const Vector &x,
       }
 #endif
 
-      int jac_ok = 1;
-      for (int i = 0; i < NE; i++)
+      // Check det(Jpr) > 0.
+      if (!untangling)
       {
-         fes->GetElementVDofs(i, xdofs);
-         x_out_loc.GetSubVector(xdofs, posV);
-         for (int j = 0; j < nsp; j++)
+         int jac_ok = 1;
+         if (dim == 1)
          {
-            fes->GetFE(i)->CalcDShape(ir.IntPoint(j), dshape);
-            MultAtB(pos, dshape, Jpr);
-            if (Jpr.Det() <= 0.0) { jac_ok = 0; goto break2; }
+            for (int i = 0; i < NE; i++)
+            {
+               fes->GetElementVDofs(i, xdofs);
+               x_out_loc.GetSubVector(xdofs, posV);
+               for (int j = 0; j < nsp; j++)
+               {
+                  fes->GetFE(i)->CalcDShape(ir.IntPoint(j), dshape);
+                  MultAtB(pos, dshape, Jpr);
+                  if (Jpr.Det() <= 0.0) { jac_ok = 0; goto break2; }
+               }
+            }
+         break2:;
          }
-      }
-
-   break2:
-      int jac_ok_all = jac_ok;
+         else
+         {
+            jac_ok = dim == 2 ? CheckDetJpr_2D(fes, x_out_loc) :
+                     dim == 3 ? CheckDetJpr_3D(fes, x_out_loc) : 0;
+         }
+         int jac_ok_all = jac_ok;
 #ifdef MFEM_USE_MPI
-      if (parallel)
-      {
-         MPI_Allreduce(&jac_ok, &jac_ok_all, 1, MPI_INT, MPI_LAND,
-                       p_nlf->ParFESpace()->GetComm());
-      }
+         if (parallel)
+         {
+            MPI_Allreduce(&jac_ok, &jac_ok_all, 1, MPI_INT, MPI_LAND,
+                          p_nlf->ParFESpace()->GetComm());
+         }
 #endif
-
-      if (jac_ok_all == 0)
-      {
-         if (print_level >= 0)
-         { mfem::out << "Scale = " << scale << " Neg det(J) found.\n"; }
-         scale *= 0.5; continue;
-      }
+         if (jac_ok_all == 0)
+         {
+            if (print_level >= 0)
+            { mfem::out << "Scale = " << scale << " Neg det(J) found.\n"; }
+            scale *= detJ_factor; continue;
+         }
+      } // endif(!untangling)
 
       ProcessNewState(x_out);
       if (serial)
@@ -429,25 +528,37 @@ double TMOPNewtonSolver::ComputeScalingFactor(const Vector &x,
          energy_out = p_nlf->GetParGridFunctionEnergy(x_out_loc);
       }
 #endif
-      if (energy_out > 1.2*energy_in || std::isnan(energy_out) != 0)
-      {
-         if (print_level >= 0)
-         { mfem::out << "Scale = " << scale << " Increasing energy.\n"; }
-         scale *= 0.5; continue;
-      }
 
-      oper->Mult(x_out, r);
-      if (have_b) { r -= b; }
-      double norm = Norm(r);
-
-      if (norm > 1.2*norm0)
+      if (untangling)
       {
-         if (print_level >= 0)
-         { mfem::out << "Scale = " << scale << " Norm increased.\n"; }
-         scale *= 0.5; continue;
+         if (energy_out > energy_in || std::isnan(energy_out) != 0)
+         {
+            scale *= 0.5;
+         }
+         else { x_out_ok = true; break; }
       }
-      else { x_out_ok = true; break; }
-   }
+      else
+      {
+         if (energy_out > 1.2*energy_in || std::isnan(energy_out) != 0)
+         {
+            if (print_level >= 0)
+            { mfem::out << "Scale = " << scale << " Increasing energy.\n"; }
+            scale *= 0.5; continue;
+         }
+
+         oper->Mult(x_out, r);
+         if (have_b) { r -= b; }
+         double norm = Norm(r);
+
+         if (norm > 1.2*norm0)
+         {
+            if (print_level >= 0)
+            { mfem::out << "Scale = " << scale << " Norm increased.\n"; }
+            scale *= 0.5; continue;
+         }
+         else { x_out_ok = true; break; }
+      } // endif (untangling)
+   } // enddo (i)
 
    if (print_level >= 0)
    {
@@ -572,105 +683,6 @@ void TMOPNewtonSolver::UpdateDiscreteTC(const TMOP_Integrator &ti,
          discrtc->UpdateHessianTargetSpecification(x_new, dx, update_flag);
       }
    }
-}
-
-double TMOPDescentNewtonSolver::ComputeScalingFactor(const Vector &x,
-                                                     const Vector &b) const
-{
-   const FiniteElementSpace *fes = NULL;
-   double energy_in = 0.0;
-#ifdef MFEM_USE_MPI
-   const ParNonlinearForm *p_nlf = dynamic_cast<const ParNonlinearForm *>(oper);
-   MFEM_VERIFY(!(parallel && p_nlf == NULL), "Invalid Operator subclass.");
-   if (parallel)
-   {
-      fes = p_nlf->FESpace();
-      energy_in = p_nlf->GetEnergy(x);
-   }
-#endif
-   const bool serial = !parallel;
-   const NonlinearForm *nlf = dynamic_cast<const NonlinearForm *>(oper);
-   MFEM_VERIFY(!(serial && nlf == NULL), "Invalid Operator subclass.");
-   if (serial)
-   {
-      fes = nlf->FESpace();
-      energy_in = nlf->GetEnergy(x);
-   }
-
-   const int NE = fes->GetMesh()->GetNE(), dim = fes->GetFE(0)->GetDim(),
-             dof = fes->GetFE(0)->GetDof(), nsp = ir.GetNPoints();
-   Array<int> xdofs(dof * dim);
-   DenseMatrix Jpr(dim), dshape(dof, dim), pos(dof, dim);
-   Vector posV(pos.Data(), dof * dim);
-   Vector x_loc(fes->GetVSize());
-
-   double min_detJ = infinity();
-   for (int i = 0; i < NE; i++)
-   {
-      fes->GetElementVDofs(i, xdofs);
-      // TODO x_loc doesn't have valid values here!
-      MFEM_ABORT("This function has to be fixed!");
-      x_loc.GetSubVector(xdofs, posV);
-
-      for (int j = 0; j < nsp; j++)
-      {
-         fes->GetFE(i)->CalcDShape(ir.IntPoint(j), dshape);
-         MultAtB(pos, dshape, Jpr);
-         min_detJ = std::min(min_detJ, Jpr.Det());
-      }
-   }
-   double min_detJ_all = min_detJ;
-#ifdef MFEM_USE_MPI
-   if (parallel)
-   {
-      MPI_Allreduce(&min_detJ, &min_detJ_all, 1, MPI_DOUBLE, MPI_MIN,
-                    p_nlf->ParFESpace()->GetComm());
-   }
-#endif
-   if (print_level >= 0)
-   {
-      mfem::out << "Minimum det(J) = " << min_detJ_all << '\n';
-   }
-
-   Vector x_out(x.Size());
-   bool x_out_ok = false;
-   double scale = 1.0, energy_out = 0.0;
-
-   for (int i = 0; i < 7; i++)
-   {
-      add(x, -scale, c, x_out);
-      if (serial)
-      {
-         const SparseMatrix *cP = fes->GetConformingProlongation();
-         if (!cP) { x_loc = x_out; }
-         else     { cP->Mult(x_out,x_loc); }
-         energy_out = nlf->GetGridFunctionEnergy(x_loc);
-      }
-#ifdef MFEM_USE_MPI
-      else
-      {
-         fes->GetProlongationMatrix()->Mult(x_out, x_loc);
-         energy_out = p_nlf->GetParGridFunctionEnergy(x_loc);
-      }
-#endif
-
-      if (energy_out > energy_in || std::isnan(energy_out) != 0)
-      {
-         scale *= 0.5;
-      }
-      else { x_out_ok = true; break; }
-   }
-
-   if (print_level >= 0)
-   {
-      mfem::out << "Energy decrease: "
-                << (energy_in - energy_out) / energy_in * 100.0
-                << "% with " << scale << " scaling.\n";
-   }
-
-   if (x_out_ok == false) { return 0.0; }
-
-   return scale;
 }
 
 #ifdef MFEM_USE_MPI

@@ -83,8 +83,8 @@ double NonlinearForm::GetGridFunctionEnergy(const Vector &x) const
 {
    if (ext)
    {
-      MFEM_VERIFY(fnfi.Size() == 0, "Not Yet implemented!");
-      MFEM_VERIFY(bfnfi.Size() == 0, "Not Yet implemented!");
+      MFEM_VERIFY(!fnfi.Size(), "Interior faces terms not yet implemented!");
+      MFEM_VERIFY(!bfnfi.Size(), "Boundary face terms not yet implemented!");
       return ext->GetGridFunctionEnergy(x);
    }
 
@@ -145,7 +145,6 @@ void NonlinearForm::Mult(const Vector &x, Vector &y) const
 
    if (ext)
    {
-      py = 0.0;
       ext->Mult(px, py);
       if (Serial())
       {
@@ -282,15 +281,15 @@ Operator &NonlinearForm::GetGradient(const Vector &x) const
    if (ext)
    {
       Operator &grad = ext->GetGradient(Prolongate(x));
-      extGrad.Reset(&grad, false);
+      hGrad.Reset(&grad, false);
       if (Serial())
       {
-         if (cP) { extGrad.Reset(new RAPOperator(*cP, grad, *cP)); }
-         Operator *G;
-         extGrad.Ptr()->Operator::FormSystemOperator(ess_tdof_list, G);
-         extGrad.Reset(G);
+         Operator *Gop;
+         if (cP) { hGrad.Reset(new RAPOperator(*cP, grad, *cP)); }
+         hGrad.Ptr()->Operator::FormSystemOperator(ess_tdof_list, Gop);
+         hGrad.Reset(Gop);
       }
-      return *extGrad.Ptr();
+      return *hGrad.Ptr();
    }
 
    const int skip_zeros = 0;
@@ -310,6 +309,7 @@ Operator &NonlinearForm::GetGradient(const Vector &x) const
    {
       *Grad = 0.0;
    }
+
    if (dnfi.Size())
    {
       for (int i = 0; i < fes->GetNE(); i++)
@@ -451,7 +451,7 @@ void NonlinearForm::Update()
 
 void NonlinearForm::Setup()
 {
-   if (ext) { return ext->Assemble(); }
+   if (ext) { return ext->Setup(); }
 }
 
 NonlinearForm::~NonlinearForm()

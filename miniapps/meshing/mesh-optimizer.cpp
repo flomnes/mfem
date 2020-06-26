@@ -32,27 +32,29 @@
 // Compile with: make mesh-optimizer
 //
 // Sample runs:
-//   Adapted analytic Hessian:
+//   Adapted analytic shape:
 //     mesh-optimizer -m square01.mesh -o 2 -rs 2 -mid 2 -tid 4 -ni 200 -ls 2 -li 100 -bnd -qt 1 -qo 8
-//   Adapted analytic Hessian with size+orientation:
+//   Adapted analytic size+orientation:
 //     mesh-optimizer -m square01.mesh -o 2 -rs 2 -mid 14 -tid 4 -ni 100 -ls 2 -li 100 -bnd -qt 1 -qo 8 -fd
-//   Adapted analytic Hessian with shape+size+orientation
-//     mesh-optimizer -m square01.mesh -o 2 -rs 2 -mid 87 -tid 4 -ni 100 -ls 2 -li 100 -bnd -qt 1 -qo 8 -fd
+//   Adapted analytic shape+orientation:
+//     mesh-optimizer -m square01.mesh -o 2 -rs 2 -mid 85 -tid 4 -ni 100 -ls 2 -li 100 -bnd -qt 1 -qo 8 -fd
+//
 //   Adapted discrete size:
 //     mesh-optimizer -m square01.mesh -o 2 -rs 2 -mid 7 -tid 5 -ni 200 -ls 2 -li 100 -bnd -qt 1 -qo 8
 //     mesh-optimizer -m square01.mesh -o 2 -rs 2 -mid 2 -tid 5 -ni 200 -ls 2 -li 100 -bnd -qt 1 -qo 8 -cmb 2 -nor
-//
-//   Adapted size+aspect ratio to discrete material indicator
+//   Adapted discrete size+aspect_ratio:
 //     mesh-optimizer -m square01.mesh -o 2 -rs 2 -mid 7 -tid 6 -ni 100  -ls 2 -li 100 -bnd -qt 1 -qo 8
-//   Adapted discrete size+orientation (requires GSLIB)
+//   Adapted discrete size+orientation (requires GSLIB):
 //   * mesh-optimizer -m square01.mesh -o 2 -rs 2 -mid 14 -tid 8 -ni 100  -ls 2 -li 100 -bnd -qt 1 -qo 8 -fd -ae 1
-//   Adapted discrete aspect-ratio+orientation (requires GSLIB)
-//   * mesh-optimizer -m square01.mesh -o 2 -rs 2 -mid 87 -tid 8 -ni 10  -ls 2 -li 100 -bnd -qt 1 -qo 8 -fd -ae 1
-//   Adapted discrete aspect ratio (3D)
+//   Adapted discrete aspect-ratio+orientation (requires GSLIB):
+//   * mesh-optimizer -m square01.mesh -o 2 -rs 2 -mid 85 -tid 8 -ni 10  -ls 2 -li 100 -bnd -qt 1 -qo 8 -fd -ae 1
+//   Adapted discrete aspect ratio (3D):
 //     mesh-optimizer -m cube.mesh -o 2 -rs 2 -mid 302 -tid 7 -ni 20  -ls 2 -li 100 -bnd -qt 1 -qo 8
 //
 //   Adaptive limiting:
-//     mesh-optimizer -m stretched2D.mesh -o 2 -mid 2 -tid 1 -ni 50 -qo 5 -nor -vl 1 -alc 0.5 -ae 0
+//     mesh-optimizer -m stretched2D.mesh -o 2 -mid 2 -tid 1 -ni 50 -qo 5 -nor -vl 1 -alc 0.5
+//   Adaptive limiting through the L-BFGS solver:
+//     mesh-optimizer -m stretched2D.mesh -o 2 -mid 2 -tid 1 -ni 400 -qo 5 -nor -vl 1 -alc 0.5 -st 1
 //   Adaptive limiting through FD (requires GSLIB):
 //   * mesh-optimizer -m stretched2D.mesh -o 2 -mid 2 -tid 1 -ni 50 -qo 5 -nor -vl 1 -alc 0.5 -fd -ae 1
 //
@@ -100,8 +102,9 @@ int main(int argc, char *argv[])
    double adapt_lim_const = 0.0;
    int quad_type         = 1;
    int quad_order        = 8;
-   int newton_iter       = 10;
-   double newton_rtol    = 1e-10;
+   int solver_type       = 0;
+   int solver_iter       = 10;
+   double solver_rtol    = 1e-10;
    int lin_solver        = 2;
    int max_lin_iter      = 100;
    bool move_bnd         = true;
@@ -163,9 +166,11 @@ int main(int argc, char *argv[])
                   "3: Closed uniform points");
    args.AddOption(&quad_order, "-qo", "--quad_order",
                   "Order of the quadrature rule.");
-   args.AddOption(&newton_iter, "-ni", "--newton-iters",
+   args.AddOption(&solver_type, "-st", "--solver-type",
+                  " Type of solver: (default) 0: Newton, 1: LBFGS");
+   args.AddOption(&solver_iter, "-ni", "--newton-iters",
                   "Maximum number of Newton iterations.");
-   args.AddOption(&newton_rtol, "-rtol", "--newton-rel-tolerance",
+   args.AddOption(&solver_rtol, "-rtol", "--newton-rel-tolerance",
                   "Relative tolerance for the Newton solver.");
    args.AddOption(&lin_solver, "-ls", "--lin-solver",
                   "Linear solver: 0 - l1-Jacobi, 1 - CG, 2 - MINRES.");
@@ -310,10 +315,9 @@ int main(int argc, char *argv[])
    // 11. Form the integrator that uses the chosen metric and target.
    double tauval = -0.1;
    TMOP_QualityMetric *metric = NULL;
-   MFEM_VERIFY(!pa || (metric_id == 2 ||
-                       metric_id == 302 ||
-                       metric_id == 303 ||
-                       metric_id == 321), "");
+   MFEM_VERIFY(!pa ||
+               (metric_id == 1 || metric_id == 2 ||
+                metric_id == 302 || metric_id == 303 || metric_id == 321), "");
    switch (metric_id)
    {
       case 1: metric = new TMOP_Metric_001; break;
@@ -327,7 +331,7 @@ int main(int argc, char *argv[])
       case 56: metric = new TMOP_Metric_056; break;
       case 58: metric = new TMOP_Metric_058; break;
       case 77: metric = new TMOP_Metric_077; break;
-      case 87: metric = new TMOP_Metric_SS2D; break;
+      case 85: metric = new TMOP_Metric_085; break;
       case 211: metric = new TMOP_Metric_211; break;
       case 252: metric = new TMOP_Metric_252(tauval); break;
       case 301: metric = new TMOP_Metric_301; break;
@@ -347,7 +351,7 @@ int main(int argc, char *argv[])
    FiniteElementSpace ind_fesv(mesh, &ind_fec, dim);
    GridFunction size(&ind_fes), aspr(&ind_fes), disc(&ind_fes), ori(&ind_fes);
    GridFunction aspr3d(&ind_fesv), size3d(&ind_fesv);
-   MFEM_VERIFY(!pa || target_id == 1, "");
+   const AssemblyLevel al = pa ? AssemblyLevel::PARTIAL : AssemblyLevel::FULL;
    switch (target_id)
    {
       case 1: target_t = TargetConstructor::IDEAL_SHAPE_UNIT_SIZE; break;
@@ -368,7 +372,7 @@ int main(int argc, char *argv[])
          DiscreteAdaptTC *tc = new DiscreteAdaptTC(target_t);
          if (adapt_eval == 0)
          {
-            tc->SetAdaptivityEvaluator(new AdvectorCG);
+            tc->SetAdaptivityEvaluator(new AdvectorCG(al));
          }
          else
          {
@@ -394,7 +398,7 @@ int main(int argc, char *argv[])
          disc.ProjectCoefficient(ind_coeff);
          if (adapt_eval == 0)
          {
-            tc->SetAdaptivityEvaluator(new AdvectorCG);
+            tc->SetAdaptivityEvaluator(new AdvectorCG(al));
          }
          else
          {
@@ -485,7 +489,7 @@ int main(int argc, char *argv[])
          DiscreteAdaptTC *tc = new DiscreteAdaptTC(target_t);
          if (adapt_eval == 0)
          {
-            tc->SetAdaptivityEvaluator(new AdvectorCG);
+            tc->SetAdaptivityEvaluator(new AdvectorCG(al));
          }
          else
          {
@@ -508,7 +512,7 @@ int main(int argc, char *argv[])
          DiscreteAdaptTC *tc = new DiscreteAdaptTC(target_t);
          if (adapt_eval == 0)
          {
-            tc->SetAdaptivityEvaluator(new AdvectorCG);
+            tc->SetAdaptivityEvaluator(new AdvectorCG(al));
          }
          else
          {
@@ -526,7 +530,7 @@ int main(int argc, char *argv[])
             tc->SetSerialDiscreteTargetSize(size);
          }
 
-         if (metric_id == 87)
+         if (metric_id == 85)
          {
             FunctionCoefficient aspr_coeff(discrete_aspr_2d);
             aspr.ProjectCoefficient(aspr_coeff);
@@ -573,19 +577,19 @@ int main(int argc, char *argv[])
    // The small_phys_size is relevant only with proper normalization.
    if (normalization) { dist = small_phys_size; }
    ConstantCoefficient lim_coeff(lim_const);
-   MFEM_VERIFY(!pa || lim_const == 0.0, "");
    if (lim_const != 0.0) { he_nlf_integ->EnableLimiting(x0, dist, lim_coeff); }
 
    // Adaptive limiting.
    GridFunction zeta_0(&ind_fes);
    ConstantCoefficient coef_zeta(adapt_lim_const);
    AdaptivityEvaluator *adapt_evaluator = NULL;
+   MFEM_VERIFY(!pa || adapt_lim_const == 0.0, "");
    if (adapt_lim_const > 0.0)
    {
       FunctionCoefficient alim_coeff(adapt_lim_fun);
       zeta_0.ProjectCoefficient(alim_coeff);
 
-      if (adapt_eval == 0) { adapt_evaluator = new AdvectorCG; }
+      if (adapt_eval == 0) { adapt_evaluator = new AdvectorCG(al); }
       else if (adapt_eval == 1)
       {
 #ifdef MFEM_USE_GSLIB
@@ -757,44 +761,26 @@ int main(int argc, char *argv[])
       }
    }
    cout << "Minimum det(J) of the original mesh is " << tauval << endl;
+   tauval -= 0.01 * h0.Min(); // Slightly below minJ0 to avoid div by 0.
 
-   // 19. Finally, perform the nonlinear optimization.
-   NewtonSolver *newton = NULL;
-   MFEM_VERIFY(!pa || tauval > 0.0, "");
-   if (tauval > 0.0)
+   // Perform the nonlinear optimization.
+   TMOPNewtonSolver solver(*ir, solver_type);
+   if (solver_type == 0)
    {
-      tauval = 0.0;
-      TMOPNewtonSolver *tns = new TMOPNewtonSolver(*ir);
-      newton = tns;
-      cout << "TMOPNewtonSolver is used (as all det(J) > 0).\n";
+      // Specify linear solver when we use a Newton-based solver.
+      solver.SetPreconditioner(*S);
    }
-   else
-   {
-      if ( (dim == 2 && metric_id != 22 && metric_id != 252) ||
-           (dim == 3 && metric_id != 352) )
-      {
-         cout << "The mesh is inverted. Use an untangling metric." << endl;
-         return 3;
-      }
-      tauval -= 0.01 * h0.Min(); // Slightly below minJ0 to avoid div by 0.
-      newton = new TMOPDescentNewtonSolver(*ir);
-      cout << "The TMOPDescentNewtonSolver is used (as some det(J) < 0).\n";
-   }
-   newton->SetPreconditioner(*S);
-   newton->SetMaxIter(newton_iter);
-   newton->SetRelTol(newton_rtol);
-   newton->SetAbsTol(0.0);
-   newton->SetPrintLevel(verbosity_level >= 1 ? 1 : -1);
-   newton->SetOperator(a);
-   newton->Mult(b, x.GetTrueVector());
+   solver.SetMaxIter(solver_iter);
+   solver.SetRelTol(solver_rtol);
+   solver.SetAbsTol(0.0);
+   solver.SetPrintLevel(verbosity_level >= 1 ? 1 : -1);
+   solver.SetOperator(a);
+   solver.Mult(b, x.GetTrueVector());
    x.SetFromTrueVector();
-
-   if (newton->GetConverged() == false)
+   if (solver.GetConverged() == false)
    {
-      cout << "NewtonIteration: rtol = " << newton_rtol << " not achieved."
-           << endl;
+      cout << "Nonlinear solver: rtol = " << solver_rtol << " not achieved.\n";
    }
-   delete newton;
 
    // 20. Save the optimized mesh to a file. This output can be viewed later
    //     using GLVis: "glvis -m optimized.mesh".

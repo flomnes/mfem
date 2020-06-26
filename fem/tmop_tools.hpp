@@ -28,12 +28,14 @@ private:
    Vector nodes0;
    Vector field0;
    const double dt_scale;
+   const AssemblyLevel al;
 
    void ComputeAtNewPositionScalar(const Vector &new_nodes, Vector &new_field);
 public:
-   AdvectorCG(double timestep_scale = 0.5)
+   AdvectorCG(AssemblyLevel al = AssemblyLevel::FULL,
+              double timestep_scale = 0.5)
       : AdaptivityEvaluator(),
-        ode_solver(), nodes0(), field0(), dt_scale(timestep_scale) { }
+        ode_solver(), nodes0(), field0(), dt_scale(timestep_scale), al(al) { }
 
    virtual void SetInitialField(const Vector &init_nodes,
                                 const Vector &init_field);
@@ -78,12 +80,14 @@ protected:
    GridFunction &u;
    VectorGridFunctionCoefficient u_coeff;
    mutable BilinearForm M, K;
+   const AssemblyLevel al;
 
 public:
    /** Here @a fes is the FESpace of the function that will be moved. Note
        that Mult() moves the nodes of the mesh corresponding to @a fes. */
    SerialAdvectorCGOper(const Vector &x_start, GridFunction &vel,
-                        FiniteElementSpace &fes);
+                        FiniteElementSpace &fes,
+                        AssemblyLevel al = AssemblyLevel::FULL);
 
    virtual void Mult(const Vector &ind, Vector &di_dt) const;
 };
@@ -98,20 +102,24 @@ protected:
    GridFunction &u;
    VectorGridFunctionCoefficient u_coeff;
    mutable ParBilinearForm M, K;
+   const AssemblyLevel al;
 
 public:
    /** Here @a pfes is the ParFESpace of the function that will be moved. Note
        that Mult() moves the nodes of the mesh corresponding to @a pfes. */
    ParAdvectorCGOper(const Vector &x_start, GridFunction &vel,
-                     ParFiniteElementSpace &pfes);
+                     ParFiniteElementSpace &pfes,
+                     AssemblyLevel al = AssemblyLevel::FULL);
 
    virtual void Mult(const Vector &ind, Vector &di_dt) const;
 };
 #endif
 
-class TMOPNewtonSolver : public NewtonSolver
+class TMOPNewtonSolver : public LBFGSSolver
 {
 protected:
+   // 0 - Newton, 1 - LBFGS.
+   int solver_type;
    bool parallel;
 
    // Quadrature points that are checked for negative Jacobians etc.
@@ -121,29 +129,46 @@ protected:
 
 public:
 #ifdef MFEM_USE_MPI
-   TMOPNewtonSolver(MPI_Comm comm, const IntegrationRule &irule)
-      : NewtonSolver(comm), parallel(true), ir(irule) { }
+   TMOPNewtonSolver(MPI_Comm comm, const IntegrationRule &irule, int type = 0)
+      : LBFGSSolver(comm), solver_type(type), parallel(true), ir(irule) { }
 #endif
-   TMOPNewtonSolver(const IntegrationRule &irule)
-      : NewtonSolver(), parallel(false), ir(irule) { }
+   TMOPNewtonSolver(const IntegrationRule &irule, int type = 0)
+      : LBFGSSolver(), solver_type(type), parallel(false), ir(irule) { }
 
    virtual double ComputeScalingFactor(const Vector &x, const Vector &b) const;
 
    virtual void ProcessNewState(const Vector &x) const;
-};
 
-/// Allows negative Jacobians. Used for untangling.
-class TMOPDescentNewtonSolver : public TMOPNewtonSolver
-{
-public:
-#ifdef MFEM_USE_MPI
-   TMOPDescentNewtonSolver(MPI_Comm comm, const IntegrationRule &irule)
-      : TMOPNewtonSolver(comm, irule) { }
-#endif
-   TMOPDescentNewtonSolver(const IntegrationRule &irule)
-      : TMOPNewtonSolver(irule) { }
+   virtual void Mult(const Vector &b, Vector &x) const
+   {
+      if (solver_type == 0)
+      {
+         NewtonSolver::Mult(b, x);
+      }
+      else if (solver_type == 1)
+      {
+         LBFGSSolver::Mult(b, x);
+      }
+      else { MFEM_ABORT("Invalid type"); }
+   }
 
-   virtual double ComputeScalingFactor(const Vector &x, const Vector &b) const;
+   virtual void SetSolver(Solver &solver)
+   {
+      if (solver_type == 0)
+      {
+         NewtonSolver::SetSolver(solver);
+      }
+      else if (solver_type == 1)
+      {
+         LBFGSSolver::SetSolver(solver);
+      }
+      else { MFEM_ABORT("Invalid type"); }
+   }
+   virtual void SetPreconditioner(Solver &pr) { SetSolver(pr); }
+   int CheckDetJpr_2D(const FiniteElementSpace*, const Vector&) const;
+   int CheckDetJpr_3D(const FiniteElementSpace*, const Vector&) const;
+   double MinDetJpr_2D(const FiniteElementSpace*, const Vector&) const;
+   double MinDetJpr_3D(const FiniteElementSpace*, const Vector&) const;
 };
 
 void vis_tmop_metric_s(int order, TMOP_QualityMetric &qm,

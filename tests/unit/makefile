@@ -57,7 +57,8 @@ TMOP_FILES = $(SRC)miniapps/test_tmop.cpp
 SEQ_TMOP_TESTS = tmop_tests_cpu tmop_tests_debug
 SEQ_TMOP_TESTS += $(if $(USE_CUDA),tmop_tests_cuda)
 SEQ_TMOP_TESTS += $(if $(USE_CUDA),tmop_tests_cuda_uvm)
-PAR_TMOP_TESTS = $(SEQ_TMOP_TESTS:%=p%)
+PAR_TMOP_TESTS = ptmop_tests_cpu
+PAR_TMOP_TESTS += $(if $(USE_CUDA),ptmop_tests_cuda)
 
 SEQ_TMOP_CPU_OBJ_FILES = $(TMOP_FILES:$(SRC)%.cpp=%.cpu.o)
 SEQ_TMOP_DEBUG_OBJ_FILES = $(TMOP_FILES:$(SRC)%.cpp=%.debug.o)
@@ -137,8 +138,8 @@ $(eval $(call psedov_tests,cuda_uvm,CUDA_UVM,cuda:uvm))
 
 # TMOP rules to copy the mesh files
 # Needed for running the sample runs when building out-of-source
-DATA_MESH_FILES = toroid-hex.mesh
-MINIAPPS_MESHING_MESH_FILES = blade.mesh
+DATA_MESH_FILES = star.mesh toroid-hex.mesh
+MINIAPPS_MESHING_MESH_FILES = square01.mesh blade.mesh cube.mesh
 $(DATA_MESH_FILES): %: $(MFEM_DIR)/data/%
 	ln -sf $(<) .
 $(MINIAPPS_MESHING_MESH_FILES): %: $(MFEM_DIR)/miniapps/meshing/%
@@ -177,9 +178,9 @@ $$(PAR_TMOP_$(2)_OBJ_FILES): %.p$(1).o: $$(SRC)%.cpp $$(HEADER_FILES) $$(CONFIG_
 	   $$(TMOP_TESTS_FLAGS) -o $$(@)
 endef
 $(eval $(call ptmop_tests,cpu,CPU,cpu))
-$(eval $(call ptmop_tests,debug,DEBUG,debug))
+#$(eval $(call ptmop_tests,debug,DEBUG,debug))
 $(eval $(call ptmop_tests,cuda,CUDA,cuda))
-$(eval $(call ptmop_tests,cuda_uvm,CUDA_UVM,cuda:uvm))
+#$(eval $(call ptmop_tests,cuda_uvm,CUDA_UVM,cuda:uvm))
 
 $(DATA_DIR):
 	ln -s $(SRC)$(DATA_DIR) .

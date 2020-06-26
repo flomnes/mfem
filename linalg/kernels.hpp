@@ -40,6 +40,45 @@ namespace mfem
 namespace kernels
 {
 
+/// Compute the square of the Euclidean distance to another vector
+template<int DIM>
+MFEM_HOST_DEVICE inline double DistanceSquared(const double *x, const double *y)
+{
+   double d = 0.0;
+   for (int i = 0; i < DIM; i++) { d += (x[i]-y[i])*(x[i]-y[i]); }
+   return d;
+}
+
+/// Creates n x n diagonal matrix with diagonal elements c
+template<int DIM>
+MFEM_HOST_DEVICE inline void Diag(const double c, double *data)
+{
+   const int N = DIM*DIM;
+   for (int i = 0; i < N; i++) { data[i] = 0.0; }
+   for (int i = 0; i < DIM; i++) { data[i*(DIM+1)] = c; }
+}
+
+/// Vector subtraction operation: z = a * (x - y)
+template<int DIM>
+MFEM_HOST_DEVICE inline void Subtract(const double a,
+                                      const double *x, const double *y,
+                                      double *z)
+{
+   for (int i = 0; i < DIM; i++) { z[i] = a * (x[i] - y[i]); }
+}
+
+/// Dense matrix operation: VWt += v w^t
+template<int DIM>
+MFEM_HOST_DEVICE inline void AddMultVWt(const double *v, const double *w,
+                                        double *VWt)
+{
+   for (int i = 0; i < DIM; i++)
+   {
+      const double vi = v[i];
+      for (int j = 0; j < DIM; j++) { VWt[i*DIM+j] += vi * w[j]; }
+   }
+}
+
 template<int H, int W, typename T>
 MFEM_HOST_DEVICE inline
 void FNorm(double &scale_factor, double &scaled_fnorm2, const T *data)
@@ -1480,6 +1519,45 @@ double CalcSingularvalue<3>(const double *data, const int i)
 have_aa:
 
    return sqrt(fabs(aa))*mult; // take abs before we sort?
+}
+
+
+/// Assuming L.U = P.A for a factored matrix (m x m),
+//  compute x <- A x
+//
+// @param [in] data LU factorization of A
+// @param [in] m square matrix height
+// @param [in] ipiv array storing pivot information
+// @param [in, out] x vector storing right-hand side and then solution
+MFEM_HOST_DEVICE
+inline void LUSolve(const double *data, const int m, const int *ipiv,
+                    double *x)
+{
+   // X <- P X
+   for (int i = 0; i < m; i++)
+   {
+      internal::Swap<double>(x[i], x[ipiv[i]]);
+   }
+
+   // X <- L^{-1} X
+   for (int j = 0; j < m; j++)
+   {
+      const double x_j = x[j];
+      for (int i = j + 1; i < m; i++)
+      {
+         x[i] -= data[i + j * m] * x_j;
+      }
+   }
+
+   // X <- U^{-1} X
+   for (int j = m - 1; j >= 0; j--)
+   {
+      const double x_j = (x[j] /= data[j + j * m]);
+      for (int i = 0; i < j; i++)
+      {
+         x[i] -= data[i + j * m] * x_j;
+      }
+   }
 }
 
 } // namespace kernels

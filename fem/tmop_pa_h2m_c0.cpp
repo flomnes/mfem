@@ -11,20 +11,20 @@
 
 #include "tmop.hpp"
 #include "tmop_pa.hpp"
+#include "linearform.hpp"
 #include "../general/forall.hpp"
 #include "../linalg/kernels.hpp"
 
 namespace mfem
 {
 
-MFEM_REGISTER_TMOP_KERNELS(void, AddMultGradPA_Kernel_2D,
+MFEM_REGISTER_TMOP_KERNELS(void, AddMultGradPA_Kernel_C0_2D,
                            const int NE,
                            const Array<double> &b_,
                            const Array<double> &g_,
-                           const DenseTensor &j_,
-                           const Vector &h_,
-                           const Vector &x_,
-                           Vector &y_,
+                           const Vector &h0_,
+                           const Vector &r_,
+                           Vector &c_,
                            const int d1d,
                            const int q1d)
 {
@@ -34,15 +34,16 @@ MFEM_REGISTER_TMOP_KERNELS(void, AddMultGradPA_Kernel_2D,
    const int D1D = T_D1D ? T_D1D : d1d;
    const int Q1D = T_Q1D ? T_Q1D : q1d;
 
+   const auto H0 = Reshape(h0_.Read(), DIM, DIM, Q1D, Q1D, NE);
    const auto b = Reshape(b_.Read(), Q1D, D1D);
    const auto g = Reshape(g_.Read(), Q1D, D1D);
-   const auto J = Reshape(j_.Read(), DIM, DIM, Q1D, Q1D, NE);
-   const auto X = Reshape(x_.Read(), D1D, D1D, DIM, NE);
-   const auto H = Reshape(h_.Read(), DIM, DIM, DIM, DIM, Q1D, Q1D, NE);
-   auto Y = Reshape(y_.ReadWrite(), D1D, D1D, DIM, NE);
+   const auto R = Reshape(r_.Read(), D1D, D1D, DIM, NE);
+
+   auto Y = Reshape(c_.ReadWrite(), D1D, D1D, DIM, NE);
 
    MFEM_FORALL_2D(e, NE, Q1D, Q1D, NBZ,
    {
+      constexpr int DIM = 2;
       const int D1D = T_D1D ? T_D1D : d1d;
       const int Q1D = T_Q1D ? T_Q1D : q1d;
       constexpr int NBZ = 1;
@@ -50,78 +51,60 @@ MFEM_REGISTER_TMOP_KERNELS(void, AddMultGradPA_Kernel_2D,
       constexpr int MD1 = T_D1D ? T_D1D : T_MAX;
 
       MFEM_SHARED double BG[2][MQ1*MD1];
+
       MFEM_SHARED double XY[2][NBZ][MD1*MD1];
-      MFEM_SHARED double DQ[4][NBZ][MD1*MQ1];
-      MFEM_SHARED double QQ[4][NBZ][MQ1*MQ1];
+      MFEM_SHARED double DQ[2][NBZ][MD1*MQ1];
+      MFEM_SHARED double QQ[2][NBZ][MQ1*MQ1];
 
-      kernels::LoadX<MD1,NBZ>(e,D1D,X,XY);
-      kernels::LoadBG<MD1,MQ1>(D1D,Q1D,b,g,BG);
+      kernels::LoadX<MD1,NBZ>(e,D1D,R,XY);
+      kernels::LoadBG<MD1,MQ1>(D1D, Q1D, b, g, BG);
 
-      kernels::GradX<MD1,MQ1,NBZ>(D1D,Q1D,BG,XY,DQ);
-      kernels::GradY<MD1,MQ1,NBZ>(D1D,Q1D,BG,DQ,QQ);
+      kernels::EvalX<MD1,MQ1,NBZ>(D1D,Q1D,BG,XY,DQ);
+      kernels::EvalY<MD1,MQ1,NBZ>(D1D,Q1D,BG,DQ,QQ);
 
       MFEM_FOREACH_THREAD(qy,y,Q1D)
       {
          MFEM_FOREACH_THREAD(qx,x,Q1D)
          {
-            const double *Jtr = &J(0,0,qx,qy,e);
+            // Xh = X^T . Sh
+            double Xh[2];
+            kernels::PullEvalXY<MQ1,NBZ>(qx,qy,QQ,Xh);
 
-            // Jrt = Jtr^{-1}
-            double Jrt[4];
-            kernels::CalcInverse<2>(Jtr, Jrt);
-
-            // Jpr = X^T.DSh
-            double Jpr[4];
-            kernels::PullGradXY<MQ1,NBZ>(qx,qy,QQ,Jpr);
-
-            // Jpt = Jpr . Jrt
-            double Jpt[4];
-            kernels::Mult(2,2,2, Jpr, Jrt, Jpt);
-
-            // B = Jpt : H
             double B[4];
-            DeviceMatrix M(B,2,2);
-            ConstDeviceMatrix J(Jpt,2,2);
+            DeviceMatrix H(B,2,2);
             for (int i = 0; i < DIM; i++)
             {
                for (int j = 0; j < DIM; j++)
                {
-                  M(i,j) = 0.0;
-                  for (int r = 0; r < DIM; r++)
-                  {
-                     for (int c = 0; c < DIM; c++)
-                     {
-                        M(i,j) += H(r,c,i,j,qx,qy,e) * J(r,c);
-                     }
-                  }
+                  H(i,j) = H0(i,j,qx,qy,e);
                }
             }
 
-            // C = Jrt . B
-            double C[4];
-            kernels::MultABt(2,2,2, Jrt, B, C);
-            kernels::PushGradXY<MQ1,NBZ>(qx,qy, C, QQ);
+            // p2 = B . Xh
+            double p2[2];
+            kernels::Mult(2,2,B,Xh,p2);
+            kernels::PushEvalXY<MQ1,NBZ>(qx,qy,p2,QQ);
          }
       }
       MFEM_SYNC_THREAD;
       kernels::LoadBGt<MD1,MQ1>(D1D,Q1D,b,g,BG);
-      kernels::GradYt<MD1,MQ1,NBZ>(D1D,Q1D,BG,QQ,DQ);
-      kernels::GradXt<MD1,MQ1,NBZ>(D1D,Q1D,BG,DQ,Y,e);
+      kernels::EvalXt<MD1,MQ1,NBZ>(D1D,Q1D,BG,QQ,DQ);
+      kernels::EvalYt<MD1,MQ1,NBZ>(D1D,Q1D,BG,DQ,Y,e);
    });
 }
 
-void TMOP_Integrator::AddMultGradPA_2D(const Vector &R, Vector &C) const
+void TMOP_Integrator::AddMultGradPA_C0_2D(const Vector &X, const Vector &R,
+                                          Vector &C) const
 {
    const int N = PA.ne;
    const int D1D = PA.maps->ndof;
    const int Q1D = PA.maps->nqpt;
    const int id = (D1D << 4 ) | Q1D;
-   const DenseTensor &J = PA.Jtr;
    const Array<double> &B = PA.maps->B;
    const Array<double> &G = PA.maps->G;
-   const Vector &H = PA.H;
+   const Vector &H0 = PA.H0;
 
-   MFEM_LAUNCH_TMOP_KERNEL(AddMultGradPA_Kernel_2D,id,N,B,G,J,H,R,C);
+   MFEM_LAUNCH_TMOP_KERNEL(AddMultGradPA_Kernel_C0_2D,id,N,B,G,H0,R,C);
 }
 
 } // namespace mfem

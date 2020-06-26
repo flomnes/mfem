@@ -168,21 +168,6 @@ public:
    { MFEM_ABORT("Not implemented"); }
 };
 
-/// Shape+Size metric, 2D.
-class TMOP_Metric_SS2D : public TMOP_QualityMetric
-{
-public:
-   // W = 0.5 (1 - cos(theta_Jpr - theta_Jtr)).
-   virtual double EvalW(const DenseMatrix &Jpt) const;
-
-   virtual void EvalP(const DenseMatrix &Jpt, DenseMatrix &P) const
-   { MFEM_ABORT("Not implemented"); }
-
-   virtual void AssembleH(const DenseMatrix &Jpt, const DenseMatrix &DS,
-                          const double weight, DenseMatrix &A) const
-   { MFEM_ABORT("Not implemented"); }
-};
-
 /// Shape, ideal barrier metric, 2D
 class TMOP_Metric_002 : public TMOP_QualityMetric
 {
@@ -334,6 +319,21 @@ public:
 
    virtual void AssembleH(const DenseMatrix &Jpt, const DenseMatrix &DS,
                           const double weight, DenseMatrix &A) const;
+};
+
+/// Shape & orientation metric, 2D.
+class TMOP_Metric_085 : public TMOP_QualityMetric
+{
+public:
+   // W = |T-T'|^2, where T'= |T|*I/sqrt(2).
+   virtual double EvalW(const DenseMatrix &Jpt) const;
+
+   virtual void EvalP(const DenseMatrix &Jpt, DenseMatrix &P) const
+   { MFEM_ABORT("Not implemented"); }
+
+   virtual void AssembleH(const DenseMatrix &Jpt, const DenseMatrix &DS,
+                          const double weight, DenseMatrix &A) const
+   { MFEM_ABORT("Not implemented"); }
 };
 
 /// Untangling metric, 2D
@@ -678,6 +678,8 @@ public:
    /// Used by target type IDEAL_SHAPE_EQUAL_SIZE. The default volume scale is 1.
    void SetVolumeScale(double vol_scale) { volume_scale = vol_scale; }
 
+   const TargetType &Type() const { return target_type; }
+
    /// Checks if the target matrices contain non-trivial size specification.
    virtual bool ContainsVolumeInfo() const;
 
@@ -920,17 +922,17 @@ protected:
    struct
    {
       int dim, ne, nq;
-      mutable Vector E, O, X, P, A;
-      mutable bool setup;
+      mutable DenseTensor Jtr;
+      mutable bool setup_Grad, setup_Jtr;
+      mutable Vector E, O, W, X0, H, C0, LD, H0;
       const DofToQuad *maps;
       const GeometricFactors *geom;
       const FiniteElementSpace *fes;
-      const Operator *elem_restrict_lex = nullptr;
+      const Operator *R;
    } PA;
 
    void ComputeNormalizationEnergies(const GridFunction &x,
                                      double &metric_energy, double &lim_energy);
-
 
    void AssembleElementVectorExact(const FiniteElement &el,
                                    ElementTransformation &T,
@@ -1072,12 +1074,11 @@ public:
                                     const Vector &elfun, DenseMatrix &elmat);
    /// PA extension
    using NonlinearFormIntegrator::GetGridFunctionEnergyPA;
-   double GetGridFunctionEnergyPA_2D(const FiniteElementSpace &fes,
-                                     const Vector &x) const;
-   double GetGridFunctionEnergyPA_3D(const FiniteElementSpace &fes,
-                                     const Vector &x) const;
-   virtual double GetGridFunctionEnergyPA(const FiniteElementSpace &fes,
-                                          const Vector &x) const;
+   double GetGridFunctionEnergyPA_2D(const Vector&) const;
+   double GetGridFunctionEnergyPA_C0_2D(const Vector&) const;
+   double GetGridFunctionEnergyPA_3D(const Vector&) const;
+   double GetGridFunctionEnergyPA_C0_3D(const Vector&) const;
+   virtual double GetGridFunctionEnergyPA(const Vector&) const;
 
    using NonlinearFormIntegrator::AssemblePA;
    virtual void AssemblePA(const FiniteElementSpace&);
@@ -1085,16 +1086,21 @@ public:
    using NonlinearFormIntegrator::AddMultPA;
    void AddMultPA_2D(const Vector&, Vector&) const;
    void AddMultPA_3D(const Vector&, Vector&) const;
+   void AddMultPA_C0_2D(const Vector&, Vector&) const;
+   void AddMultPA_C0_3D(const Vector&, Vector&) const;
    virtual void AddMultPA(const Vector&, Vector&) const;
 
    using NonlinearFormIntegrator::AddMultGradPA;
-   void AddMultGradPA_2D(const Vector&, const Vector&, Vector&) const;
+   void AddMultGradPA_2D(const Vector&, Vector&) const;
    void AddMultGradPA_3D(const Vector&, const Vector&, Vector&) const;
+   void AddMultGradPA_C0_2D(const Vector&, const Vector&, Vector&) const;
+   void AddMultGradPA_C0_3D(const Vector&, const Vector&, Vector&) const;
    virtual void AddMultGradPA(const Vector&, const Vector&, Vector&) const;
 
-   void AssembleGradPA_2D(const DenseMatrix&, const Vector&) const;
-   void AssembleGradPA_3D(const DenseMatrix&, const Vector&) const;
-   void AssembleGradPA(const DenseMatrix&, const Vector&) const;
+   void AssembleGradPA_2D(const Vector&) const;
+   void AssembleGradPA_3D(const Vector&) const;
+   void AssembleGradPA_C0_2D(const Vector&) const;
+   void AssembleGradPA_C0_3D(const Vector&) const;
 
    DiscreteAdaptTC *GetDiscreteAdaptTC() const { return discr_tc; }
 

@@ -60,6 +60,8 @@ endif()
 
 # All serial non-device unit tests are built into a single executable 'unit_tests'.
 add_executable(unit_tests unit_test_main.cpp ${UNIT_TESTS_SRCS})
+# Unit tests need the ../../data directory.
+add_dependencies(unit_tests copy_data)
 target_link_libraries(unit_tests mfem)
 
 # Function to add one device serial test from the tests/unit/miniapp directory.
@@ -121,6 +123,18 @@ add_custom_command(TARGET unit_tests POST_BUILD
 configure_file("${PROJECT_SOURCE_DIR}/miniapps/meshing/blade.mesh"
                "${PROJECT_BINARY_DIR}/tests/unit/blade.mesh")
 
+# Copy star.mesh to the tests/unit build directory.
+configure_file("${PROJECT_SOURCE_DIR}/data/star.mesh"
+               "${PROJECT_BINARY_DIR}/tests/unit/star.mesh")
+               
+# Copy square01.mesh to the tests/unit build directory.
+configure_file("${PROJECT_SOURCE_DIR}/miniapps/meshing/square01.mesh"
+               "${PROJECT_BINARY_DIR}/tests/unit/square01.mesh")
+               
+# Copy cube.mesh to the tests/unit build directory.
+configure_file("${PROJECT_SOURCE_DIR}/miniapps/meshing/cube.mesh"
+               "${PROJECT_BINARY_DIR}/tests/unit/cube.mesh")
+               
 # Copy toroid-hex.mesh to the tests/unit build directory.
 configure_file("${PROJECT_SOURCE_DIR}/data/toroid-hex.mesh"
                "${PROJECT_BINARY_DIR}/tests/unit/toroid-hex.mesh")
@@ -138,8 +152,19 @@ if (MFEM_USE_MPI)
    add_test(NAME punit_tests COMMAND punit_tests)
 endif(MFEM_USE_MPI)
 
+# Function to add one MPI executable for a test.
+function(add_mpi_executable_test name dev)
+    string(TOUPPER name NAME)
+    string(REPLACE "_" ":" DEV name)
+    add_executable(p${name}_tests_${dev} ${PAR_${NAME}_TESTS_SRCS})
+    target_compile_definitions(p${name}_tests_${dev} PUBLIC MFEM_${NAME}_MPI=1)
+    target_compile_definitions(p${name}_tests_${dev} PUBLIC MFEM_${NAME}_TESTS=1)
+    target_compile_definitions(p${name}_tests_${dev} PUBLIC MFEM_${NAME}_DEVICE="${DEV}")
+    target_link_libraries(p${name}_tests_${dev} mfem)
+endfunction(add_mpi_executable_test)
+
 # Function to add one test from the tests/unit/miniapp directory.
-function(add_parallel_miniapp_test name)
+function(add_parallel_miniapp_test name HYPRE_MM)
     string(TOUPPER name NAME)
 
     add_test(NAME ${name}_tests_cpu COMMAND ${name}_tests_cpu)
@@ -158,36 +183,29 @@ function(add_parallel_miniapp_test name)
           set_property(SOURCE ${PAR_${NAME}_TESTS_SRCS} PROPERTY LANGUAGE CUDA)
        endif()
 
-       add_executable(p${name}_tests_cpu ${PAR_${NAME}_TESTS_SRCS})
-       target_compile_definitions(p${name}_tests_cpu PUBLIC MFEM_${NAME}_MPI=1)
-       target_compile_definitions(p${name}_tests_cpu PUBLIC MFEM_${NAME}_TESTS=1)
-       target_compile_definitions(p${name}_tests_cpu PUBLIC MFEM_${NAME}_DEVICE="cpu")
-       target_link_libraries(p${name}_tests_cpu mfem)
-
-       add_executable(p${name}_tests_debug ${PAR_${NAME}_TESTS_SRCS})
-       target_compile_definitions(p${name}_tests_debug PUBLIC MFEM_${NAME}_MPI=1)
-       target_compile_definitions(p${name}_tests_debug PUBLIC MFEM_${NAME}_TESTS=1)
-       target_compile_definitions(p${name}_tests_debug PUBLIC MFEM_${NAME}_DEVICE="debug")
-       target_link_libraries(p${name}_tests_debug mfem)
-
-       if (MFEM_USE_CUDA)
-          add_executable(p${name}_tests_cuda ${PAR_${NAME}_TESTS_SRCS})
-          target_compile_definitions(p${name}_tests_cuda PUBLIC MFEM_${NAME}_MPI=1)
-          target_compile_definitions(p${name}_tests_cuda PUBLIC MFEM_${NAME}_TESTS=1)
-          target_compile_definitions(p${name}_tests_cuda PUBLIC MFEM_${NAME}_DEVICE="cuda")
-          target_link_libraries(p${name}_tests_cuda mfem)
-
-          add_executable(p${name}_tests_cuda_uvm ${PAR_${NAME}_TESTS_SRCS})
-          target_compile_definitions(p${name}_tests_cuda_uvm PUBLIC MFEM_${NAME}_MPI=1)
-          target_compile_definitions(p${name}_tests_cuda_uvm PUBLIC MFEM_${NAME}_TESTS=1)
-          target_compile_definitions(p${name}_tests_cuda_uvm PUBLIC MFEM_${NAME}_DEVICE="cuda:uvm")
-          target_link_libraries(p${name}_tests_cuda_uvm mfem)
+       add_mpi_executable_test(${name} cpu)
+       if (HYPRE_MM)
+           add_mpi_executable_test(${name} debug)
        endif()
 
-       add_dependencies(${MFEM_ALL_TESTS_TARGET_NAME} punit_tests p${name}_tests_cpu p${name}_tests_debug)
+       if (MFEM_USE_CUDA)
+          add_mpi_executable_test(${name} cuda)
+          if (HYPRE_MM)
+              add_mpi_executable_test(${name} cuda_uvm)
+          endif()
+       endif()
+
+       if (NOT HYPRE_MM)
+          add_dependencies(${MFEM_ALL_TESTS_TARGET_NAME} punit_tests p${name}_tests_cpu)
+       else()
+          add_dependencies(${MFEM_ALL_TESTS_TARGET_NAME} punit_tests p${name}_tests_cpu p${name}_tests_debug)
+       endif()
+
        if (MFEM_USE_CUDA)
           add_dependencies(${MFEM_ALL_TESTS_TARGET_NAME} p${name}_tests_cuda)
-          add_dependencies(${MFEM_ALL_TESTS_TARGET_NAME} p${name}_tests_cuda_uvm)
+          if (HYPRE_MM)
+             add_dependencies(${MFEM_ALL_TESTS_TARGET_NAME} p${name}_tests_cuda_uvm)
+          endif()
        endif()
 
        function(add_mpi_unit_test NAME NP)
@@ -200,10 +218,16 @@ function(add_parallel_miniapp_test name)
        set(MPI_NPS 1 ${MFEM_MPI_NP})
        foreach(np ${MPI_NPS})
           add_mpi_unit_test(cpu ${np})
-          add_mpi_unit_test(debug ${np})
+          if (HYPRE_MM)
+            add_mpi_unit_test(debug ${np})
+          endif()
        endforeach()
        if (MFEM_USE_CUDA)
-          foreach(dev cuda cuda_uvm)
+          set(backends cuda)
+          if (HYPRE_MM)
+             list(APPEND backends cuda_uvm)
+          endif()
+          foreach(dev ${backends})
              foreach(np ${MPI_NPS})
                 add_mpi_unit_test(${dev} ${np})
              endforeach()
@@ -213,5 +237,5 @@ function(add_parallel_miniapp_test name)
 endfunction(add_parallel_miniapp_test)
 
 # Additional MPI unit tests
-add_parallel_miniapp_test(sedov)
-add_parallel_miniapp_test(tmop)
+add_parallel_miniapp_test(sedov TRUE)
+add_parallel_miniapp_test(tmop FALSE)

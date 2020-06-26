@@ -23,8 +23,270 @@ namespace mfem
 namespace kernels
 {
 
+class InvariantsEvaluator2D
+{
+public:
+   class Buffers
+   {
+      friend class InvariantsEvaluator2D;
+   private:
+      const double * J_ = nullptr;
+      double * dI1_ = nullptr;
+      double * dI1b_ = nullptr;
+      double * ddI1_ = nullptr;
+      double * ddI1b_ = nullptr;
+      double * dI2_ = nullptr;
+      double * dI2b_ = nullptr;
+      double * ddI2_ = nullptr;
+      double * ddI2b_ = nullptr;
+   public:
+      MFEM_HOST_DEVICE Buffers() {}
+      MFEM_HOST_DEVICE Buffers &J(const double *b) { J_     = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &dI1(double *b)     { dI1_   = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &dI1b(double *b)    { dI1b_  = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &ddI1(double *b)    { ddI1_  = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &ddI1b(double *b)   { ddI1b_ = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &dI2(double *b)     { dI2_   = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &dI2b(double *b)    { dI2b_  = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &ddI2(double *b)    { ddI2_  = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &ddI2b(double *b)   { ddI2b_ = b; return *this; }
+   };
+
+private:
+   double const * const J;
+   double * const dI1, * const dI1b, * const ddI1, * const ddI1b;
+   double * const dI2, * const dI2b, * const ddI2, * const ddI2b;
+
+public:
+   MFEM_HOST_DEVICE
+   InvariantsEvaluator2D(Buffers b):
+      J(b.J_),
+      dI1(b.dI1_), dI1b(b.dI1b_), ddI1(b.ddI1_), ddI1b(b.ddI1b_),
+      dI2(b.dI2_), dI2b(b.dI2b_), ddI2(b.ddI2_), ddI2b(b.ddI2b_) { }
+
+   MFEM_HOST_DEVICE inline double Get_I2b(double &sign_detJ) // det(J) + sign
+   {
+      const double I2b = J[0]*J[3] - J[1]*J[2];
+      sign_detJ = I2b >= 0.0 ? 1.0 : -1.0;
+      return sign_detJ * I2b;
+   }
+
+   MFEM_HOST_DEVICE inline double Get_I2b() // det(J)
+   {
+      double sign_detJ;
+      return Get_I2b(sign_detJ);
+   }
+
+   MFEM_HOST_DEVICE inline double Get_I2() // det(J)^{2}
+   {
+      const double I2b = Get_I2b();
+      return I2b * I2b;
+   }
+
+   MFEM_HOST_DEVICE inline double Get_I1() // I1 = ||J||_F^2
+   {
+      return J[0]*J[0] + J[1]*J[1] + J[2]*J[2] + J[3]*J[3];
+   }
+
+   MFEM_HOST_DEVICE inline double Get_I1b() // I1b = I1/det(J)
+   {
+      return Get_I1() / Get_I2b();
+   }
+
+   MFEM_HOST_DEVICE inline double *Get_dI1()
+   {
+      dI1[0] = 2*J[0]; dI1[2] = 2*J[2];
+      dI1[1] = 2*J[1]; dI1[3] = 2*J[3];
+      return dI1;
+   }
+
+   MFEM_HOST_DEVICE inline double *Get_dI1b()
+   {
+      // I1b = I1/I2b
+      // dI1b = (1/I2b)*dI1 - (I1/I2b^2)*dI2b = (2/I2b)*[J - (I1b/2)*dI2b]
+      const double c1 = 2.0/Get_I2b();
+      const double c2 = Get_I1b()/2.0;
+      Get_dI2b();
+      dI1b[0] = c1*(J[0] - c2*dI2b[0]);
+      dI1b[1] = c1*(J[1] - c2*dI2b[1]);
+      dI1b[2] = c1*(J[2] - c2*dI2b[2]);
+      dI1b[3] = c1*(J[3] - c2*dI2b[3]);
+      return dI1b;
+   }
+
+   MFEM_HOST_DEVICE inline double *Get_dI2()
+   {
+      // I2 = I2b^2
+      // dI2 = 2*I2b*dI2b = 2*det(J)*adj(J)^T
+      const double c1 = 2*Get_I2b();
+      Get_dI2b();
+      dI2[0] = c1*dI2b[0];
+      dI2[1] = c1*dI2b[1];
+      dI2[2] = c1*dI2b[2];
+      dI2[3] = c1*dI2b[3];
+      return dI2;
+   }
+
+   MFEM_HOST_DEVICE inline double *Get_dI2b()
+   {
+      // I2b = det(J)
+      // dI2b = adj(J)^T
+      double sign_detJ;
+      Get_I2b(sign_detJ);
+      dI2b[0] =  sign_detJ*J[3];
+      dI2b[1] = -sign_detJ*J[2];
+      dI2b[2] = -sign_detJ*J[1];
+      dI2b[3] =  sign_detJ*J[0];
+      return dI2b;
+   }
+
+   // ddI1_ijkl = 2 I_ijkl = 2 δ_ik δ_jl
+   MFEM_HOST_DEVICE inline double *Get_ddI1(int i, int j)
+   {
+      // ddI1_ijkl = 2 I_ijkl = 2 δ_ik δ_jl
+      DeviceMatrix ddi1(ddI1,2,2);
+      for (int k=0; k<2; k++)
+      {
+         for (int l=0; l<2; l++)
+         {
+            ddi1(k,l) = (i==k && j==l) ? 2.0 : 0.0;
+         }
+      }
+      return ddI1;
+   }
+
+   // ddI1b = X1 + X2 + X3, where
+   // X1_ijkl = (I1b/I2) [ dI2b_ij dI2b_kl + dI2b_kj dI2b_il ]
+   // X2_ijkl = (1/I2b) ddI1_ijkl
+   // X3_ijkl = -(2/I2) (J_ij dI2b_kl + dI2b_ij J_kl)
+   MFEM_HOST_DEVICE inline double *Get_ddI1b(int i, int j)
+   {
+      double X1_p[4], X2_p[4], X3_p[4];
+
+      // X1_ijkl = (I1b/I2) [ dI2b_ij dI2b_kl + dI2b_kj dI2b_il ]
+      const double I2 = Get_I2();
+      const double I1b = Get_I1b();
+      ConstDeviceMatrix di2b(Get_dI2b(),2,2);
+      const double alpha = I1b / I2;
+      DeviceMatrix X1(X1_p,2,2);
+      for (int k=0; k<2; k++)
+      {
+         for (int l=0; l<2; l++)
+         {
+            X1(k,l) = alpha * (di2b(i,j)*di2b(k,l) + di2b(k,j)*di2b(i,l));
+         }
+      }
+      // X2_ijkl = (1/I2b) ddI1_ijkl
+      DeviceMatrix X2(X2_p,2,2);
+      const double beta = 1.0 / Get_I2b();
+      ConstDeviceMatrix ddi1(Get_ddI1(i,j),2,2);
+      for (int k=0; k<2; k++)
+      {
+         for (int l=0; l<2; l++)
+         {
+            X2(k,l) = beta * ddi1(k,l);
+         }
+      }
+      // X3_ijkl = -(2/I2) (J_ij dI2b_kl + dI2b_ij J_kl)
+      DeviceMatrix X3(X3_p,2,2);
+      const double gamma = -2.0/Get_I2();
+      ConstDeviceMatrix Jpt(J,2,2);
+      for (int k=0; k<2; k++)
+      {
+         for (int l=0; l<2; l++)
+         {
+            X3(k,l) = gamma * (Jpt(i,j)*di2b(k,l) + di2b(i,j)*Jpt(k,l));
+         }
+      }
+      DeviceMatrix ddi1b(ddI1b,2,2);
+      for (int k=0; k<2; k++)
+      {
+         for (int l=0; l<2; l++)
+         {
+            ddi1b(k,l) = X1(k,l) + X2(k,l) + X3(k,l);
+         }
+      }
+      return ddI1b;
+   }
+
+   // ddI2_ijkl = 2 dI2b_ij dI2b_kl + 2 (dI2b_ij dI2b_kl - dI2b_kj dI2b_il)
+   MFEM_HOST_DEVICE inline double *Get_ddI2(int i, int j)
+   {
+      DeviceMatrix ddi2(ddI2,2,2);
+      ConstDeviceMatrix di2b(Get_dI2b(),2,2);
+      for (int k=0; k<2; k++)
+      {
+         for (int l=0; l<2; l++)
+         {
+            ddi2(k,l) = 2*di2b(i,j)*di2b(k,l)
+                        + 2*(di2b(i,j)*di2b(k,l) - di2b(k,j)*di2b(i,l));
+         }
+      }
+      return ddI2;
+   }
+
+   // ddI2b_ijkl = (1/I2b) (δ_ks δ_it - δ_kt δ_si) dI2b_tj dI2b_sl
+   MFEM_HOST_DEVICE inline double *Get_ddI2b(int i, int j)
+   {
+      DeviceMatrix ddi2b(ddI2b,2,2);
+      const double alpha = 1.0/Get_I2b();
+      ConstDeviceMatrix di2b(Get_dI2b(),2,2);
+      for (int k=0; k<2; k++)
+      {
+         for (int l=0; l<2; l++)
+         {
+            ddi2b(k,l) = 0.0;
+            for (int s=0; s<2; s++)
+            {
+               for (int t=0; t<2; t++)
+               {
+                  const double ks_it = k==s && i==t ? 1.0 : 0.0;
+                  const double kt_si = k==t && s==i ? 1.0 : 0.0;
+                  ddi2b(k,l) += alpha * (ks_it - kt_si) * di2b(t,j) * di2b(s,l);
+               }
+            }
+         }
+      }
+      return ddI2b;
+   }
+};
+
+
 class InvariantsEvaluator3D
 {
+public:
+   class Buffers
+   {
+      friend class InvariantsEvaluator3D;
+   private:
+      const double * J_ = nullptr;
+      double * B_ = nullptr;
+      double * dI1_ = nullptr;
+      double * dI1b_ = nullptr;
+      double * ddI1_ = nullptr;
+      double * ddI1b_ = nullptr;
+      double * dI2_ = nullptr;
+      double * dI2b_ = nullptr;
+      double * ddI2_ = nullptr;
+      double * ddI2b_ = nullptr;
+      double * dI3b_ = nullptr;
+      double * ddI3b_ = nullptr;
+   public:
+      MFEM_HOST_DEVICE Buffers() {}
+      MFEM_HOST_DEVICE Buffers &J(const double *b) { J_     = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &B(double *b)       { B_     = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &dI1(double *b)     { dI1_   = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &dI1b(double *b)    { dI1b_  = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &ddI1(double *b)    { ddI1_  = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &ddI1b(double *b)   { ddI1b_ = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &dI2(double *b)     { dI2_   = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &dI2b(double *b)    { dI2b_  = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &ddI2(double *b)    { ddI2_  = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &ddI2b(double *b)   { ddI2b_ = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &dI3b(double *b)    { dI3b_  = b; return *this; }
+      MFEM_HOST_DEVICE Buffers &ddI3b(double *b)   { ddI3b_ = b; return *this; }
+   };
+
 private:
    double const * const J;
    double * const B;
@@ -34,21 +296,11 @@ private:
 
 public:
    MFEM_HOST_DEVICE
-   InvariantsEvaluator3D(const double *J, double *B,
-                         double *dI1, double *dI1b, double *ddI1, double *ddI1b,
-                         double *dI2, double *dI2b, double *ddI2, double *ddI2b,
-                         double *dI3b, double *ddI3b):
-      J(J), B(B),
-      dI1(dI1), dI1b(dI1b), ddI1(ddI1), ddI1b(ddI1b),
-      dI2(dI2), dI2b(dI2b), ddI2(ddI2), ddI2b(ddI2b),
-      dI3b(dI3b), ddI3b(ddI3b) { }
-
-   MFEM_HOST_DEVICE
-   InvariantsEvaluator3D(const double *J, double *B):
-      J(J), B(B),
-      dI1(nullptr), dI1b(nullptr), ddI1(nullptr), ddI1b(nullptr),
-      dI2(nullptr), dI2b(nullptr), ddI2(nullptr), ddI2b(nullptr),
-      dI3b(nullptr), ddI3b(nullptr) { }
+   InvariantsEvaluator3D(Buffers b):
+      J(b.J_), B(b.B_),
+      dI1(b.dI1_), dI1b(b.dI1b_), ddI1(b.ddI1_), ddI1b(b.ddI1b_),
+      dI2(b.dI2_), dI2b(b.dI2b_), ddI2(b.ddI2_), ddI2b(b.ddI2b_),
+      dI3b(b.dI3b_), ddI3b(b.ddI3b_) { }
 
    MFEM_HOST_DEVICE inline double Get_I3b(double &sign_detJ) // det(J) + sign
    {

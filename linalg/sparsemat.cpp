@@ -2146,6 +2146,11 @@ void SparseMatrix::DiagScale(const Vector &b, Vector &x, double sc) const
    MFEM_VERIFY(Finalized(), "Matrix must be finalized.");
 
    bool scale = (sc != 1.0);
+   HostReadI();
+   HostReadJ();
+   HostReadData();
+   b.HostRead();
+   x.HostWrite();
    for (int i = 0, j = 0; i < height; i++)
    {
       int end = I[i+1];
